@@ -62,13 +62,18 @@ def is_admin():
     return users.get(current_user(), {}).get("role") == "admin"
 
 # =========================
-# EXCEL
+# EXCEL EXPORT
 # =========================
 def export_to_excel(zakazka_id):
     wb = Workbook()
     ws = wb.active
 
-    ws.append(["Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum"])
+    zakazka = db.query(Zakazka).get(zakazka_id)
+
+    ws.append([f"Zakázka: {zakazka.nazev}"])
+    ws.append([])
+
+    ws.append(["Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Cena"])
 
     polozky = db.query(Polozka).filter_by(zakazka_id=zakazka_id).all()
 
@@ -76,63 +81,104 @@ def export_to_excel(zakazka_id):
     for p in polozky:
         cena = p.cena_materialu + (p.hodiny * p.sazba)
         total += cena
-        ws.append([p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum])
 
-    ws.append(["", "", "", "", "Celkem", total])
+        ws.append([
+            p.nazev,
+            p.material,
+            p.cena_materialu,
+            p.hodiny,
+            p.sazba,
+            p.datum,
+            cena
+        ])
 
-    filename = f"zakazka_{zakazka_id}.xlsx"
+    ws.append([])
+    ws.append(["", "", "", "", "", "Celkem", total])
+
+    filename = f"{zakazka.nazev}.xlsx"
     wb.save(filename)
     return filename
 
 # =========================
 # HTML
 # =========================
-LOGIN_HTML = """
+BOOTSTRAP = """
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+"""
+
+LOGIN_HTML = BOOTSTRAP + """
+<div class="container mt-5">
 <h2>Přihlášení</h2>
 <form method='post'>
-<input name='user' placeholder='Uživatel'><br>
-<input name='password' type='password' placeholder='Heslo'><br>
-<button>Přihlásit</button>
+<input name='user' class="form-control mb-2" placeholder='Uživatel'>
+<input name='password' type='password' class="form-control mb-2" placeholder='Heslo'>
+<button class="btn btn-primary">Přihlásit</button>
 </form>
-"""
-
-INDEX_HTML = """
-<h1>Zakázky ({{user}})</h1>
-<a href='/logout'>Odhlásit</a>
-
-<form method='post' action='/nova'>
-<input name='nazev' placeholder='Nová zakázka'>
-<button>Vytvořit</button>
-</form>
-
-{% for z in zakazky %}
-<div>
-<a href='/zakazka/{{z.id}}'>{{z.nazev}}</a> ({{z.owner}})
 </div>
-{% endfor %}
 """
 
-DETAIL_HTML = """
-<h2>{{z.nazev}}</h2>
-<a href='/'>Zpět</a>
+INDEX_HTML = BOOTSTRAP + """
+<div class="container mt-4">
+<h1 class="mb-4">Zakázky ({{user}})</h1>
 
-<form method='post' action='/pridat/{{z.id}}'>
-<input name='nazev' placeholder='Název položky'><br>
-<input name='material' placeholder='Materiál'><br>
-<input name='cena_materialu' placeholder='Cena materiálu'><br>
-<input name='hodiny' placeholder='Hodiny'><br>
-<input name='sazba' placeholder='Sazba'><br>
-<input name='datum' type='date'><br>
-<button>Přidat</button>
+<a href='/logout' class="btn btn-danger mb-3">Odhlásit</a>
+
+<form method='post' action='/nova' class="mb-4">
+  <div class="input-group">
+    <input name='nazev' class="form-control" placeholder='Nová zakázka'>
+    <button class="btn btn-primary">Vytvořit</button>
+  </div>
 </form>
+
+<div class="list-group">
+{% for z in zakazky %}
+  <a href='/zakazka/{{z.id}}' class="list-group-item list-group-item-action">
+    {{z.nazev}} <small class="text-muted">({{z.owner}})</small>
+  </a>
+{% endfor %}
+</div>
+</div>
+"""
+
+DETAIL_HTML = BOOTSTRAP + """
+<div class="container mt-4">
+
+<h2 class="mb-3">{{z.nazev}}</h2>
+
+<a href='/' class="btn btn-secondary mb-3">Zpět</a>
+
+<form method='post' action='/pridat/{{z.id}}' class="card p-3 mb-4">
+  <div class="row g-2">
+    <div class="col"><input name='nazev' class="form-control" placeholder='Název'></div>
+    <div class="col"><input name='material' class="form-control" placeholder='Materiál'></div>
+    <div class="col"><input name='cena_materialu' class="form-control" placeholder='Cena'></div>
+    <div class="col"><input name='hodiny' class="form-control" placeholder='Hodiny'></div>
+    <div class="col"><input name='sazba' class="form-control" placeholder='Sazba'></div>
+    <div class="col"><input name='datum' type='date' class="form-control"></div>
+  </div>
+  <button class="btn btn-success mt-2">Přidat</button>
+</form>
+
+<table class="table table-striped">
+<tr>
+<th>Název</th><th>Materiál</th><th>Cena mat.</th><th>Hodiny</th><th>Sazba</th><th>Datum</th>
+</tr>
 
 {% for p in polozky %}
-<div>
-{{p.nazev}} | {{p.material}} | {{p.cena_materialu}} Kč | {{p.hodiny}} h | {{p.sazba}} Kč/h
-</div>
+<tr>
+<td>{{p.nazev}}</td>
+<td>{{p.material}}</td>
+<td>{{p.cena_materialu}}</td>
+<td>{{p.hodiny}}</td>
+<td>{{p.sazba}}</td>
+<td>{{p.datum}}</td>
+</tr>
 {% endfor %}
+</table>
 
-<a href='/export/{{z.id}}'>Export do Excelu</a>
+<a href='/export/{{z.id}}' class="btn btn-outline-primary">Export do Excelu</a>
+
+</div>
 """
 
 # =========================
