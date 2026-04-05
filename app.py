@@ -1,85 +1,55 @@
-import json
 import os
 from flask import Flask, request, redirect, render_template_string, send_file, session
 from openpyxl import Workbook
 
-DATA_FILE = "zakazky.json"
-USERS_FILE = "users.json"
+# DB
+from sqlalchemy import create_engine, Column, Integer, String, Float
+from sqlalchemy.orm import declarative_base, sessionmaker
 
+# =========================
+# DB SETUP
+# =========================
+Base = declarative_base()
+engine = create_engine("sqlite:///data.db")
+SessionDB = sessionmaker(bind=engine)
+db = SessionDB()
+
+# =========================
+# APP
+# =========================
 app = Flask(__name__)
 app.secret_key = "secret123"
 
 # =========================
-# UŽIVATELÉ
+# USERS
 # =========================
-def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {"admin": {"password": "admin", "role": "admin"}}
-
-users = load_users()
+users = {"admin": {"password": "admin", "role": "admin"}}
 
 # =========================
-# MODEL
+# DB MODELY
 # =========================
-class Polozka:
-    def __init__(self, nazev, material, cena_materialu, hodiny, sazba, datum):
-        self.nazev = nazev
-        self.material = material  # TEXT
-        self.cena_materialu = float(cena_materialu)
-        self.hodiny = float(hodiny)
-        self.sazba = float(sazba)
-        self.datum = datum
+class Zakazka(Base):
+    __tablename__ = "zakazky"
 
-    def cena(self):
-        return self.cena_materialu + (self.hodiny * self.sazba)
-
-    def to_dict(self):
-        return self.__dict__
+    id = Column(Integer, primary_key=True)
+    nazev = Column(String)
+    owner = Column(String)
 
 
-class Zakazka:
-    def __init__(self, nazev, owner):
-        self.nazev = nazev
-        self.owner = owner
-        self.polozky = []
+class Polozka(Base):
+    __tablename__ = "polozky"
 
-    def pridat(self, p):
-        self.polozky.append(p)
-
-    def celkem(self):
-        return sum(p.cena() for p in self.polozky)
-
-    def to_dict(self):
-        return {
-            "nazev": self.nazev,
-            "owner": self.owner,
-            "polozky": [p.to_dict() for p in self.polozky]
-        }
-
-# =========================
-# DATA
-# =========================
-def save(zakazky):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump([z.to_dict() for z in zakazky], f, ensure_ascii=False, indent=2)
+    id = Column(Integer, primary_key=True)
+    zakazka_id = Column(Integer)
+    nazev = Column(String)
+    material = Column(String)
+    cena_materialu = Column(Float)
+    hodiny = Column(Float)
+    sazba = Column(Float)
+    datum = Column(String)
 
 
-def load():
-    zakazky = []
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-            for z in data:
-                zak = Zakazka(z["nazev"], z.get("owner", "admin"))
-                for p in z["polozky"]:
-                    zak.pridat(Polozka(**p))
-                zakazky.append(zak)
-    return zakazky
-
-
-zakazky = load()
+Base.metadata.create_all(engine)
 
 # =========================
 # HELPERS
@@ -91,27 +61,26 @@ def current_user():
 def is_admin():
     return users.get(current_user(), {}).get("role") == "admin"
 
-
-def visible_zakazky():
-    if is_admin():
-        return zakazky
-    return [z for z in zakazky if z.owner == current_user()]
-
 # =========================
 # EXCEL
 # =========================
-def export_to_excel(zakazka):
+def export_to_excel(zakazka_id):
     wb = Workbook()
     ws = wb.active
 
-    ws.append(["Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Cena"])
+    ws.append(["Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum"])
 
-    for p in zakazka.polozky:
-        ws.append([p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum, p.cena()])
+    polozky = db.query(Polozka).filter_by(zakazka_id=zakazka_id).all()
 
-    ws.append(["", "", "", "", "", "Celkem", zakazka.celkem()])
+    total = 0
+    for p in polozky:
+        cena = p.cena_materialu + (p.hodiny * p.sazba)
+        total += cena
+        ws.append([p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum])
 
-    filename = f"{zakazka.nazev}.xlsx"
+    ws.append(["", "", "", "", "Celkem", total])
+
+    filename = f"zakazka_{zakazka_id}.xlsx"
     wb.save(filename)
     return filename
 
@@ -122,7 +91,7 @@ LOGIN_HTML = """
 <h2>Přihlášení</h2>
 <form method='post'>
 <input name='user' placeholder='Uživatel'><br>
-<input name='password' placeholder='Heslo' type='password'><br>
+<input name='password' type='password' placeholder='Heslo'><br>
 <button>Přihlásit</button>
 </form>
 """
@@ -138,7 +107,7 @@ INDEX_HTML = """
 
 {% for z in zakazky %}
 <div>
-<a href='/zakazka/{{loop.index0}}'>{{z.nazev}}</a> ({{z.owner}})
+<a href='/zakazka/{{z.id}}'>{{z.nazev}}</a> ({{z.owner}})
 </div>
 {% endfor %}
 """
@@ -147,9 +116,9 @@ DETAIL_HTML = """
 <h2>{{z.nazev}}</h2>
 <a href='/'>Zpět</a>
 
-<form method='post' action='/pridat/{{zi}}'>
+<form method='post' action='/pridat/{{z.id}}'>
 <input name='nazev' placeholder='Název položky'><br>
-<input name='material' placeholder='Název materiálu'><br>
+<input name='material' placeholder='Materiál'><br>
 <input name='cena_materialu' placeholder='Cena materiálu'><br>
 <input name='hodiny' placeholder='Hodiny'><br>
 <input name='sazba' placeholder='Sazba'><br>
@@ -157,13 +126,13 @@ DETAIL_HTML = """
 <button>Přidat</button>
 </form>
 
-{% for p in z.polozky %}
+{% for p in polozky %}
 <div>
-{{p.nazev}} | {{p.material}} | {{p.cena_materialu}} Kč | {{p.hodiny}} h | {{p.sazba}} Kč/h → {{p.cena()}} Kč
+{{p.nazev}} | {{p.material}} | {{p.cena_materialu}} Kč | {{p.hodiny}} h | {{p.sazba}} Kč/h
 </div>
 {% endfor %}
 
-<a href='/export/{{zi}}'>Export do Excelu</a>
+<a href='/export/{{z.id}}'>Export do Excelu</a>
 """
 
 # =========================
@@ -190,58 +159,58 @@ def logout():
 def index():
     if not current_user():
         return redirect("/login")
-    return render_template_string(INDEX_HTML, zakazky=visible_zakazky(), user=current_user())
+
+    if is_admin():
+        zakazky = db.query(Zakazka).all()
+    else:
+        zakazky = db.query(Zakazka).filter_by(owner=current_user()).all()
+
+    return render_template_string(INDEX_HTML, zakazky=zakazky, user=current_user())
 
 
-@app.route("/zakazka/<int:i>")
-def detail(i):
-    z = zakazky[i]
+@app.route("/zakazka/<int:id>")
+def detail(id):
+    z = db.query(Zakazka).get(id)
+    polozky = db.query(Polozka).filter_by(zakazka_id=id).all()
+
     if not is_admin() and z.owner != current_user():
         return "Access denied"
-    return render_template_string(DETAIL_HTML, z=z, zi=i)
+
+    return render_template_string(DETAIL_HTML, z=z, polozky=polozky)
 
 
 @app.route("/nova", methods=["POST"])
 def nova():
-    zakazky.append(Zakazka(request.form["nazev"], current_user()))
-    save(zakazky)
+    z = Zakazka(nazev=request.form["nazev"], owner=current_user())
+    db.add(z)
+    db.commit()
     return redirect("/")
 
 
-@app.route("/pridat/<int:i>", methods=["POST"])
-def pridat(i):
-    z = zakazky[i]
-
-    if not is_admin() and z.owner != current_user():
-        return "Access denied"
-
+@app.route("/pridat/<int:id>", methods=["POST"])
+def pridat(id):
     try:
         p = Polozka(
-            request.form["nazev"],
-            request.form["material"],
-            request.form["cena_materialu"].replace(",", "."),
-            request.form["hodiny"].replace(",", "."),
-            request.form["sazba"].replace(",", "."),
-            request.form["datum"]
+            zakazka_id=id,
+            nazev=request.form["nazev"],
+            material=request.form["material"],
+            cena_materialu=float(request.form["cena_materialu"].replace(",", ".")),
+            hodiny=float(request.form["hodiny"].replace(",", ".")),
+            sazba=float(request.form["sazba"].replace(",", ".")),
+            datum=request.form["datum"]
         )
-
-        z.pridat(p)
-        save(zakazky)
-
+        db.add(p)
+        db.commit()
     except ValueError:
-        return "Chyba: Cena materiálu, hodiny a sazba musí být čísla"
+        return "Chyba: čísla nejsou správně"
 
-    return redirect(f"/zakazka/{i}")
+    return redirect(f"/zakazka/{id}")
 
 
-@app.route("/export/<int:i>")
-def export(i):
-    z = zakazky[i]
-    if not is_admin() and z.owner != current_user():
-        return "Access denied"
-    filename = export_to_excel(z)
+@app.route("/export/<int:id>")
+def export(id):
+    filename = export_to_excel(id)
     return send_file(filename, as_attachment=True)
-
 
 # =========================
 # START
