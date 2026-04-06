@@ -321,7 +321,7 @@ def delete_polozka(id):
 @app.route("/export/<int:id>")
 def export(id):
     filename = export_to_excel(id)
- return send_file(filename, as_attachment=True)
+    return send_file(filename, as_attachment=True)
 
 # =========================
 # START
