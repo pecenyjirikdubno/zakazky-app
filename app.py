@@ -1,153 +1,181 @@
 import os
-from flask import Flask, request, redirect, url_for, render_template, flash, session
+from flask import Flask, request, redirect, url_for, render_template, session, flash
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
-import smtplib
-from email.message import EmailMessage
 import openpyxl
 
-# ---------------------------
-# Flask a DB setup
-# ---------------------------
+# =========================
+# APP + DB
+# =========================
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///zakazky.db"  # nebo jiná DB
+app.secret_key = os.getenv("SECRET_KEY", "secret123")
+
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
 db = SQLAlchemy(app)
 
-# ---------------------------
+# =========================
 # MODELY
-# ---------------------------
+# =========================
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(150), unique=True, nullable=False)
-    email = db.Column(db.String(150), unique=True, nullable=False)
-    password_hash = db.Column(db.String(256), nullable=False)
+    username = db.Column(db.String(100), unique=True)
+    email = db.Column(db.String(100))
+    password = db.Column(db.String(200))
+
 
 class Zakazka(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    nazev = db.Column(db.String(200), nullable=False)
-    popis = db.Column(db.Text, nullable=True)
+    nazev = db.Column(db.String(200))
+    popis = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# ---------------------------
-# EMAIL FUNKCE
-# ---------------------------
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
+# =========================
+# HELPER
+# =========================
+def current_user():
+    if "user_id" in session:
+        return User.query.get(session["user_id"])
+    return None
 
-def send_email(subject, body, to, attachment_path=None):
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_USER
-    msg["To"] = to
-    msg.set_content(body)
-
-    if attachment_path:
-        with open(attachment_path, "rb") as f:
-            data = f.read()
-            msg.add_attachment(data, maintype="application",
-                               subtype="octet-stream",
-                               filename=os.path.basename(attachment_path))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(EMAIL_USER, EMAIL_PASSWORD)
-        smtp.send_message(msg)
-
-# ---------------------------
-# EXPORT FUNKCE
-# ---------------------------
+# =========================
+# EXPORT
+# =========================
 def export_to_excel(filename, rows):
     wb = openpyxl.Workbook()
     ws = wb.active
-    for row in rows:
-        ws.append(row)
+
+    for r in rows:
+        ws.append(r)
+
     wb.save(filename)
 
+
 def daily_backup():
-    rows = [[z.id, z.nazev, z.popis, z.created_at] for z in Zakazka.query.all()]
-    filename = f"daily_backup_{datetime.now().strftime('%Y%m%d')}.xlsx"
-    export_to_excel(filename, rows)
-    send_email("Denní záloha zakázek", "Denní záloha byla vytvořena.",
-               os.getenv("DAILY_BACKUP_EMAIL"), filename)
+    with app.app_context():
+        zakazky = Zakazka.query.all()
+        rows = [[z.id, z.nazev, z.popis, z.created_at] for z in zakazky]
+
+        filename = f"daily_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        export_to_excel(filename, rows)
+        print("Daily backup created")
+
 
 def weekly_backup():
-    rows = [[z.id, z.nazev, z.popis, z.created_at] for z in Zakazka.query.all()]
-    filename = f"weekly_backup_{datetime.now().strftime('%Y%m%d')}.xlsx"
-    export_to_excel(filename, rows)
-    send_email("Týdenní záloha zakázek", "Týdenní záloha byla vytvořena.",
-               os.getenv("WEEKLY_BACKUP_EMAIL"), filename)
+    with app.app_context():
+        zakazky = Zakazka.query.all()
+        rows = [[z.id, z.nazev, z.popis, z.created_at] for z in zakazky]
 
-# ---------------------------
-# SCHEDULER
-# ---------------------------
+        filename = f"weekly_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        export_to_excel(filename, rows)
+        print("Weekly backup created")
+
+# =========================
+# SCHEDULER (SAFE PRO RENDER)
+# =========================
 scheduler = BackgroundScheduler()
-scheduler.add_job(daily_backup, "cron", hour=6)
-scheduler.add_job(weekly_backup, "cron", day_of_week="sun", hour=6)
-scheduler.start()
 
-# ---------------------------
+def start_scheduler():
+    if not scheduler.running:
+        scheduler.add_job(daily_backup, "cron", hour=6)
+        scheduler.add_job(weekly_backup, "cron", day_of_week="sun", hour=6)
+        scheduler.start()
+        print("Scheduler started")
+
+start_scheduler()
+
+# =========================
 # ROUTES
-# ---------------------------
+# =========================
 @app.route("/")
 def index():
-    return "Aplikace běží!"
+    if not current_user():
+        return redirect("/login")
+
+    zakazky = Zakazka.query.all()
+    return render_template("index.html", zakazky=zakazky)
+
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
         username = request.form["username"]
         email = request.form["email"]
-        password = request.form["password"]
+        password = generate_password_hash(request.form["password"])
+
         if User.query.filter_by(username=username).first():
-            flash("Uživatel již existuje")
-            return redirect(url_for("register"))
-        hashed = generate_password_hash(password)
-        new_user = User(username=username, email=email, password_hash=hashed)
-        db.session.add(new_user)
+            flash("Uživatel existuje")
+            return redirect("/register")
+
+        user = User(username=username, email=email, password=password)
+        db.session.add(user)
         db.session.commit()
-        flash("Registrace úspěšná! Přihlaste se.")
-        return redirect(url_for("login"))
+
+        flash("Registrace OK")
+        return redirect("/login")
+
     return render_template("register.html")
+
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         username = request.form["username"]
         password = request.form["password"]
+
         user = User.query.filter_by(username=username).first()
-        if user and check_password_hash(user.password_hash, password):
+
+        if user and check_password_hash(user.password, password):
             session["user_id"] = user.id
-            flash("Přihlášení úspěšné")
-            return redirect(url_for("index"))
+            return redirect("/")
         else:
-            flash("Špatné přihlašovací údaje")
-            return redirect(url_for("login"))
+            flash("Špatné údaje")
+
     return render_template("login.html")
+
 
 @app.route("/logout")
 def logout():
-    session.pop("user_id", None)
-    flash("Byl jste odhlášen")
-    return redirect(url_for("index"))
+    session.clear()
+    return redirect("/login")
 
-@app.route("/add_zakazka", methods=["GET", "POST"])
-def add_zakazka():
+
+@app.route("/add", methods=["GET", "POST"])
+def add():
+    if not current_user():
+        return redirect("/login")
+
     if request.method == "POST":
         nazev = request.form["nazev"]
-        popis = request.form.get("popis")
-        zakazka = Zakazka(nazev=nazev, popis=popis)
-        db.session.add(zakazka)
+        popis = request.form["popis"]
+
+        z = Zakazka(nazev=nazev, popis=popis)
+        db.session.add(z)
         db.session.commit()
-        flash("Zakázka byla přidána")
-        return redirect(url_for("index"))
+
+        return redirect("/")
+
     return render_template("add_zakazka.html")
 
-# ---------------------------
-# RUN APP
-# ---------------------------
+
+@app.route("/delete/<int:id>")
+def delete(id):
+    z = Zakazka.query.get(id)
+    db.session.delete(z)
+    db.session.commit()
+    return redirect("/")
+
+# =========================
+# INIT DB
+# =========================
+with app.app_context():
+    db.create_all()
+
+# =========================
+# RUN (pro local debug)
+# =========================
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    app.run(host="0.0.0.0", port=5000)
