@@ -1,23 +1,25 @@
 import os
 from flask import Flask, request, redirect, render_template_string, send_file, session
 from openpyxl import Workbook
-from sqlalchemy import create_engine, Column, Integer, String, Float
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
-from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 import smtplib
 from email.message import EmailMessage
 
 # =========================
-# APP & DB SETUP
+# DB SETUP
 # =========================
-app = Flask(__name__)
-app.secret_key = "secret123"
-
 Base = declarative_base()
 engine = create_engine("sqlite:///data.db")
 SessionDB = sessionmaker(bind=engine)
 db = SessionDB()
+
+# =========================
+# APP
+# =========================
+app = Flask(__name__)
+app.secret_key = "secret123"
 
 # =========================
 # USERS
@@ -43,7 +45,7 @@ class Polozka(Base):
     cena_materialu = Column(Float)
     hodiny = Column(Float)
     sazba = Column(Float)
-    datum = Column(String)
+    datum = Column(DateTime, default=datetime.now)
 
 
 Base.metadata.create_all(engine)
@@ -58,59 +60,45 @@ def current_user():
 def is_admin():
     return users.get(current_user(), {}).get("role") == "admin"
 
-# =========================
-# EMAIL SETTINGS
-# =========================
-EMAIL_FROM = "tvuj.email@gmail.com"
-EMAIL_PASSWORD = "tvuj_app_password"
-EMAIL_DAILY = "pecenyjirik@gmail.com"
-EMAIL_WEEKLY = "pecenyjiri@gmail.com"
 
-def send_email(to_email, subject, body, attachment_path):
-    msg = EmailMessage()
-    msg["From"] = EMAIL_FROM
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content(body)
-
-    if attachment_path and os.path.exists(attachment_path):
-        with open(attachment_path, "rb") as f:
-            data = f.read()
-            name = os.path.basename(attachment_path)
-            msg.add_attachment(data, maintype="application", subtype="octet-stream", filename=name)
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(EMAIL_FROM, EMAIL_PASSWORD)
-        smtp.send_message(msg)
-
-# =========================
-# EXCEL EXPORT
-# =========================
-def export_to_excel(zakazka_id):
+def export_to_excel(zakazky, polozky_dict, filename):
     wb = Workbook()
     ws = wb.active
-
-    zakazka = db.query(Zakazka).get(zakazka_id)
-
-    ws.append([f"Zakázka: {zakazka.nazev}"])
-    ws.append([])
-    ws.append(["Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Cena"])
-
-    polozky = db.query(Polozka).filter_by(zakazka_id=zakazka_id).all()
-    total = 0
-    for p in polozky:
-        cena = p.cena_materialu + (p.hodiny * p.sazba)
-        total += cena
-        ws.append([p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum, cena])
-
-    ws.append([])
-    ws.append(["", "", "", "", "", "Celkem", total])
-    filename = f"{zakazka.nazev}.xlsx"
+    for z in zakazky:
+        ws.append([f"Zakázka: {z.nazev}"])
+        ws.append([])
+        ws.append(["Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Cena"])
+        for p in polozky_dict.get(z.id, []):
+            cena = p.cena_materialu + (p.hodiny * p.sazba)
+            ws.append([
+                p.nazev,
+                p.material,
+                p.cena_materialu,
+                p.hodiny,
+                p.sazba,
+                p.datum.strftime("%Y-%m-%d"),
+                cena
+            ])
+        ws.append([])
     wb.save(filename)
     return filename
 
+
+def send_email(subject, body, attachment_path, to_email):
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = os.environ.get("EMAIL_USER")
+    msg["To"] = to_email
+    msg.set_content(body)
+    with open(attachment_path, "rb") as f:
+        data = f.read()
+        msg.add_attachment(data, maintype="application", subtype="octet-stream", filename=os.path.basename(attachment_path))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(os.environ.get("EMAIL_USER"), os.environ.get("EMAIL_PASSWORD"))
+        smtp.send_message(msg)
+
 # =========================
-# HTML TEMPLATES
+# HTML
 # =========================
 BOOTSTRAP = """
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -123,6 +111,23 @@ LOGIN_HTML = BOOTSTRAP + """
 <input name='user' class="form-control mb-2" placeholder='Uživatel'>
 <input name='password' type='password' class="form-control mb-2" placeholder='Heslo'>
 <button class="btn btn-primary">Přihlásit</button>
+<a href='/register' class="btn btn-link">Registrovat nový účet</a>
+</form>
+</div>
+"""
+
+REGISTER_HTML = BOOTSTRAP + """
+<div class="container mt-5">
+<h2>Registrace</h2>
+<form method='post'>
+<input name='user' class="form-control mb-2" placeholder='Uživatelské jméno'>
+<input name='password' type='password' class="form-control mb-2" placeholder='Heslo'>
+<select name='role' class="form-control mb-2">
+  <option value="user">Uživatel</option>
+  <option value="admin">Admin</option>
+</select>
+<button class="btn btn-success">Registrovat</button>
+<a href='/login' class="btn btn-link">Zpět na přihlášení</a>
 </form>
 </div>
 """
@@ -142,15 +147,10 @@ INDEX_HTML = BOOTSTRAP + """
 
 <div class="list-group">
 {% for z in zakazky %}
-  <div class="list-group-item d-flex justify-content-between align-items-center">
-    <a href='/zakazka/{{z.id}}'>
-      {{z.nazev}} <small class="text-muted">({{z.owner}})</small>
-    </a>
-    <form method='post' action='/edit_zakazka/{{z.id}}' class="d-flex">
-      <input name='nazev' value='{{z.nazev}}' class="form-control form-control-sm me-2">
-      <button class="btn btn-sm btn-warning">Upravit</button>
-    </form>
-  </div>
+  <a href='/zakazka/{{z.id}}' class="list-group-item list-group-item-action">
+    {{z.nazev}} <small class="text-muted">({{z.owner}})</small>
+    <a href='/edit_zakazka/{{z.id}}' class='btn btn-sm btn-outline-warning float-end'>Editovat</a>
+  </a>
 {% endfor %}
 </div>
 </div>
@@ -158,9 +158,7 @@ INDEX_HTML = BOOTSTRAP + """
 
 DETAIL_HTML = BOOTSTRAP + """
 <div class="container mt-4">
-
 <h2 class="mb-3">{{z.nazev}}</h2>
-
 <a href='/' class="btn btn-secondary mb-3">Zpět</a>
 
 <form method='post' action='/pridat/{{z.id}}' class="card p-3 mb-4">
@@ -182,39 +180,74 @@ DETAIL_HTML = BOOTSTRAP + """
 
 {% for p in polozky %}
 <tr>
-<form method='post' action='/edit_polozka/{{p.id}}'>
-<td><input name='nazev' class="form-control form-control-sm" value='{{p.nazev}}'></td>
-<td><input name='material' class="form-control form-control-sm" value='{{p.material}}'></td>
-<td><input name='cena_materialu' class="form-control form-control-sm" value='{{p.cena_materialu}}'></td>
-<td><input name='hodiny' class="form-control form-control-sm" value='{{p.hodiny}}'></td>
-<td><input name='sazba' class="form-control form-control-sm" value='{{p.sazba}}'></td>
-<td><input name='datum' type='date' class="form-control form-control-sm" value='{{p.datum}}'></td>
+<td>{{p.nazev}}</td>
+<td>{{p.material}}</td>
+<td>{{p.cena_materialu}}</td>
+<td>{{p.hodiny}}</td>
+<td>{{p.sazba}}</td>
+<td>{{p.datum.strftime("%Y-%m-%d")}}</td>
 <td>
-  <button class="btn btn-sm btn-warning mb-1">Upravit</button>
-  <a href='/delete_polozka/{{p.id}}' class="btn btn-sm btn-danger mb-1">Smazat</a>
+  <a href='/edit_polozka/{{p.id}}' class='btn btn-sm btn-outline-warning'>Editovat</a>
 </td>
-</form>
 </tr>
 {% endfor %}
 </table>
 
 <a href='/export/{{z.id}}' class="btn btn-outline-primary">Export do Excelu</a>
+</div>
+"""
 
+EDIT_ZAK_HTML = BOOTSTRAP + """
+<div class="container mt-5">
+<h2>Editace zakázky</h2>
+<form method='post'>
+<input name='nazev' value='{{z.nazev}}' class="form-control mb-2">
+<button class="btn btn-success">Uložit</button>
+<a href='/' class='btn btn-secondary'>Zpět</a>
+</form>
+</div>
+"""
+
+EDIT_POLOZ_HTML = BOOTSTRAP + """
+<div class="container mt-5">
+<h2>Editace položky</h2>
+<form method='post'>
+<input name='nazev' value='{{p.nazev}}' class="form-control mb-2">
+<input name='material' value='{{p.material}}' class="form-control mb-2">
+<input name='cena_materialu' value='{{p.cena_materialu}}' class="form-control mb-2">
+<input name='hodiny' value='{{p.hodiny}}' class="form-control mb-2">
+<input name='sazba' value='{{p.sazba}}' class="form-control mb-2">
+<input name='datum' type='date' value='{{p.datum.strftime("%Y-%m-%d")}}' class="form-control mb-2">
+<button class="btn btn-success">Uložit</button>
+<a href='/zakazka/{{p.zakazka_id}}' class='btn btn-secondary'>Zpět</a>
+</form>
 </div>
 """
 
 # =========================
 # ROUTES
 # =========================
-@app.route("/login", methods=["GET", "POST"])
+@app.route("/login", methods=["GET","POST"])
 def login():
-    if request.method == "POST":
-        u = request.form["user"]
-        p = request.form["password"]
-        if u in users and users[u]["password"] == p:
-            session["user"] = u
+    if request.method=="POST":
+        u=request.form["user"]
+        p=request.form["password"]
+        if u in users and users[u]["password"]==p:
+            session["user"]=u
             return redirect("/")
     return render_template_string(LOGIN_HTML)
+
+@app.route("/register", methods=["GET","POST"])
+def register():
+    if request.method=="POST":
+        u = request.form["user"]
+        p = request.form["password"]
+        r = request.form["role"]
+        if u not in users:
+            users[u] = {"password": p, "role": r}
+            return redirect("/login")
+        return "Uživatel již existuje"
+    return render_template_string(REGISTER_HTML)
 
 @app.route("/logout")
 def logout():
@@ -223,32 +256,23 @@ def logout():
 
 @app.route("/")
 def index():
-    if not current_user():
-        return redirect("/login")
-    zakazky = db.query(Zakazka).all() if is_admin() else db.query(Zakazka).filter_by(owner=current_user()).all()
+    if not current_user(): return redirect("/login")
+    if is_admin(): zakazky = db.query(Zakazka).all()
+    else: zakazky = db.query(Zakazka).filter_by(owner=current_user()).all()
     return render_template_string(INDEX_HTML, zakazky=zakazky, user=current_user())
 
 @app.route("/zakazka/<int:id>")
 def detail(id):
-    z = db.query(Zakazka).get(id)
-    polozky = db.query(Polozka).filter_by(zakazka_id=id).all()
-    if not is_admin() and z.owner != current_user(): return "Access denied"
+    z=db.query(Zakazka).get(id)
+    polozky=db.query(Polozka).filter_by(zakazka_id=id).all()
+    if not is_admin() and z.owner!=current_user(): return "Access denied"
     return render_template_string(DETAIL_HTML, z=z, polozky=polozky)
 
 @app.route("/nova", methods=["POST"])
 def nova():
-    z = Zakazka(nazev=request.form["nazev"], owner=current_user())
+    z=Zakazka(nazev=request.form["nazev"], owner=current_user())
     db.add(z)
     db.commit()
-    return redirect("/")
-
-@app.route("/edit_zakazka/<int:id>", methods=["POST"])
-def edit_zakazka(id):
-    z = db.query(Zakazka).get(id)
-    if not z: return "Zakázka nenalezena"
-    if not is_admin() and z.owner != current_user(): return "Access denied"
-    new_name = request.form.get("nazev")
-    if new_name: z.nazev = new_name; db.commit()
     return redirect("/")
 
 @app.route("/pridat/<int:id>", methods=["POST"])
@@ -261,7 +285,7 @@ def pridat(id):
             cena_materialu=float(request.form["cena_materialu"].replace(",", ".")),
             hodiny=float(request.form["hodiny"].replace(",", ".")),
             sazba=float(request.form["sazba"].replace(",", ".")),
-            datum=request.form["datum"]
+            datum=datetime.strptime(request.form["datum"], "%Y-%m-%d")
         )
         db.add(p)
         db.commit()
@@ -269,81 +293,67 @@ def pridat(id):
         return "Chyba: čísla nejsou správně"
     return redirect(f"/zakazka/{id}")
 
-@app.route("/edit_polozka/<int:id>", methods=["POST"])
-def edit_polozka(id):
-    p = db.query(Polozka).get(id)
-    if not p: return "Položka nenalezena"
-    zak = db.query(Zakazka).get(p.zakazka_id)
-    if not is_admin() and zak.owner != current_user(): return "Access denied"
-    try:
-        p.nazev = request.form.get("nazev")
-        p.material = request.form.get("material")
-        p.cena_materialu = float(request.form.get("cena_materialu").replace(",", "."))
-        p.hodiny = float(request.form.get("hodiny").replace(",", "."))
-        p.sazba = float(request.form.get("sazba").replace(",", "."))
-        p.datum = request.form.get("datum")
+@app.route("/edit_zakazka/<int:id>", methods=["GET","POST"])
+def edit_zakazka(id):
+    z=db.query(Zakazka).get(id)
+    if request.method=="POST":
+        z.nazev=request.form["nazev"]
         db.commit()
-    except ValueError:
-        return "Chyba: čísla nejsou správně"
-    return redirect(f"/zakazka/{p.zakazka_id}")
+        return redirect("/")
+    return render_template_string(EDIT_ZAK_HTML, z=z)
 
-@app.route("/delete_polozka/<int:id>")
-def delete_polozka(id):
-    p = db.query(Polozka).get(id)
-    if not p: return "Položka nenalezena"
-    zak = db.query(Zakazka).get(p.zakazka_id)
-    if not is_admin() and zak.owner != current_user(): return "Access denied"
-    db.delete(p); db.commit()
-    return redirect(f"/zakazka/{zak.id}")
+@app.route("/edit_polozka/<int:id>", methods=["GET","POST"])
+def edit_polozka(id):
+    p=db.query(Polozka).get(id)
+    if request.method=="POST":
+        p.nazev=request.form["nazev"]
+        p.material=request.form["material"]
+        p.cena_materialu=float(request.form["cena_materialu"].replace(",", "."))
+        p.hodiny=float(request.form["hodiny"].replace(",", "."))
+        p.sazba=float(request.form["sazba"].replace(",", "."))
+        p.datum=datetime.strptime(request.form["datum"], "%Y-%m-%d")
+        db.commit()
+        return redirect(f"/zakazka/{p.zakazka_id}")
+    return render_template_string(EDIT_POLOZ_HTML, p=p)
 
 @app.route("/export/<int:id>")
 def export(id):
-    filename = export_to_excel(id)
+    zakazka=db.query(Zakazka).get(id)
+    polozky=db.query(Polozka).filter_by(zakazka_id=id).all()
+    filename=f"{zakazka.nazev}.xlsx"
+    export_to_excel([zakazka], {zakazka.id: polozky}, filename)
     return send_file(filename, as_attachment=True)
 
 # =========================
-# AUTOMATICKÉ ZÁLOHY
+# BACKUP ENDPOINTS
 # =========================
+@app.route("/daily_backup")
 def daily_backup():
-    print("Spouštím denní zálohu:", datetime.now())
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    filename = f"daily_backup_{yesterday}.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["Zakázka", "Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Celkem"])
-    polozky = db.query(Polozka).filter(Polozka.datum >= yesterday).all()
-    for p in polozky:
-        zak = db.query(Zakazka).get(p.zakazka_id)
-        cena = p.cena_materialu + (p.hodiny * p.sazba)
-        ws.append([zak.nazev, p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum, cena])
-    wb.save(filename)
-    send_email(EMAIL_DAILY, "Denní záloha zakázek", "Přiložen denní export nových položek.", filename)
-    os.remove(filename)
+    yesterday=datetime.now()-timedelta(days=1)
+    polozky=db.query(Polozka).filter(Polozka.datum>=yesterday).all()
+    zakazky_ids={p.zakazka_id for p in polozky}
+    zakazky=db.query(Zakazka).filter(Zakazka.id.in_(zakazky_ids)).all()
+    polozky_dict={z.id:[] for z in zakazky}
+    for p in polozky: polozky_dict[p.zakazka_id].append(p)
+    filename=f"daily_backup_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    export_to_excel(zakazky,polozky_dict,filename)
+    send_email("Denní záloha zakázek","Denní záloha nových položek.",filename,"pecenyjirik@gmail.com")
+    return f"Daily backup sent: {filename}"
 
+@app.route("/weekly_backup")
 def weekly_backup():
-    print("Spouštím týdenní zálohu:", datetime.now())
-    filename = f"weekly_backup_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["Zakázka", "Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Celkem"])
-    zakazky = db.query(Zakazka).all()
-    for z in zakazky:
-        polozky = db.query(Polozka).filter_by(zakazka_id=z.id).all()
-        for p in polozky:
-            cena = p.cena_materialu + (p.hodiny * p.sazba)
-            ws.append([z.nazev, p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum, cena])
-    wb.save(filename)
-    send_email(EMAIL_WEEKLY, "Týdenní záloha zakázek", "Přiložen týdenní export všech položek.", filename)
-    os.remove(filename)
-
-scheduler = BackgroundScheduler()
-scheduler.add_job(daily_backup, "cron", hour=0, minute=0)
-scheduler.add_job(weekly_backup, "cron", day_of_week="sun", hour=1, minute=0)
-scheduler.start()
+    polozky=db.query(Polozka).all()
+    zakazky=db.query(Zakazka).all()
+    polozky_dict={z.id:[] for z in zakazky}
+    for p in polozky: polozky_dict[p.zakazka_id].append(p)
+    filename=f"weekly_backup_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    export_to_excel(zakazky,polozky_dict,filename)
+    send_email("Týdenní záloha zakázek","Týdenní kompletní záloha.",filename,"pecenyjiri@gmail.com")
+    return f"Weekly backup sent: {filename}"
 
 # =========================
-# START APP
+# START
 # =========================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+if __name__=="__main__":
+    port=int(os.environ.get("PORT",5000))
+    app.run(host="0.0.0.0",port=port)
