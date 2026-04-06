@@ -4,7 +4,6 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 from werkzeug.middleware.proxy_fix import ProxyFix
-import openpyxl
 
 # =========================
 # APP
@@ -14,11 +13,11 @@ app = Flask(__name__)
 # SECRET KEY
 app.secret_key = os.getenv("SECRET_KEY", "super-secret-key")
 
-# 🔥 FIX pro Render (proxy + HTTPS)
+# FIX pro Render (proxy + HTTPS)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 app.config["SESSION_COOKIE_SECURE"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 # =========================
@@ -73,26 +72,32 @@ def index():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-        username = request.form.get("username")
-        email = request.form.get("email")
-        password_raw = request.form.get("password")
+        try:
+            username = request.form.get("username")
+            email = request.form.get("email")
+            password_raw = request.form.get("password")
 
-        if not username or not password_raw:
-            flash("Vyplň všechny údaje")
+            if not username or not password_raw:
+                flash("Vyplň všechny údaje")
+                return redirect("/register")
+
+            if User.query.filter_by(username=username).first():
+                flash("Uživatel existuje")
+                return redirect("/register")
+
+            password = generate_password_hash(password_raw)
+
+            user = User(username=username, email=email, password=password)
+            db.session.add(user)
+            db.session.commit()
+
+            flash("Registrace OK")
+            return redirect("/login")
+
+        except Exception as e:
+            print("REGISTER ERROR:", e)
+            flash("Chyba registrace")
             return redirect("/register")
-
-        if User.query.filter_by(username=username).first():
-            flash("Uživatel existuje")
-            return redirect("/register")
-
-        password = generate_password_hash(password_raw)
-
-        user = User(username=username, email=email, password=password)
-        db.session.add(user)
-        db.session.commit()
-
-        flash("Registrace OK")
-        return redirect("/login")
 
     return render_template("register.html")
 
@@ -100,21 +105,27 @@ def register():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        try:
+            username = request.form.get("username")
+            password = request.form.get("password")
 
-        if not username or not password:
-            flash("Vyplň údaje")
-            return redirect("/login")
+            if not username or not password:
+                flash("Vyplň údaje")
+                return redirect("/login")
 
-        user = User.query.filter_by(username=username).first()
+            user = User.query.filter_by(username=username).first()
 
-        if user and check_password_hash(user.password, password):
-            session.clear()
-            session["user_id"] = user.id
-            return redirect("/")
-        else:
-            flash("Špatné údaje")
+            if user and user.password and check_password_hash(user.password, password):
+                session.clear()
+                session["user_id"] = user.id
+                return redirect("/")
+            else:
+                flash("Špatné údaje")
+                return redirect("/login")
+
+        except Exception as e:
+            print("LOGIN ERROR:", e)
+            flash("Chyba serveru")
             return redirect("/login")
 
     return render_template("login.html")
@@ -132,28 +143,38 @@ def add():
         return redirect("/login")
 
     if request.method == "POST":
-        nazev = request.form.get("nazev")
-        popis = request.form.get("popis")
+        try:
+            nazev = request.form.get("nazev")
+            popis = request.form.get("popis")
 
-        if not nazev:
-            flash("Zadej název")
+            if not nazev:
+                flash("Zadej název")
+                return redirect("/add")
+
+            z = Zakazka(nazev=nazev, popis=popis)
+            db.session.add(z)
+            db.session.commit()
+
+            return redirect("/")
+
+        except Exception as e:
+            print("ADD ERROR:", e)
+            flash("Chyba při ukládání")
             return redirect("/add")
-
-        z = Zakazka(nazev=nazev, popis=popis)
-        db.session.add(z)
-        db.session.commit()
-
-        return redirect("/")
 
     return render_template("add_zakazka.html")
 
 
 @app.route("/delete/<int:id>")
 def delete(id):
-    z = db.session.get(Zakazka, id)
-    if z:
-        db.session.delete(z)
-        db.session.commit()
+    try:
+        z = db.session.get(Zakazka, id)
+        if z:
+            db.session.delete(z)
+            db.session.commit()
+    except Exception as e:
+        print("DELETE ERROR:", e)
+
     return redirect("/")
 
 
