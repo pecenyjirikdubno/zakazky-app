@@ -16,7 +16,7 @@ app.secret_key = os.getenv("SECRET_KEY", "super-secret-key")
 # FIX pro Render (proxy + HTTPS)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SECURE"] = os.getenv("RENDER") == "true"
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
