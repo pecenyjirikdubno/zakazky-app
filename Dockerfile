@@ -16,4 +16,4 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=10000
 
 # Spustíme Flask přes Gunicorn
-CMD ["gunicorn", "app:app", "-b", "0.0.0.0:$PORT", "--workers", "1"]
+CMD ["gunicorn", "-b", "0.0.0.0:$PORT", "app:app"]
