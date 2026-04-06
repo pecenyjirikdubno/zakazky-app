@@ -1,5 +1,5 @@
 import os
-from flask import Flask, request, redirect, url_for, render_template, session, flash
+from flask import Flask, request, redirect, render_template, session, flash
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -74,7 +74,7 @@ def weekly_backup():
         print("Weekly backup created")
 
 # =========================
-# SCHEDULER (SAFE PRO RENDER)
+# SCHEDULER (OPRAVA)
 # =========================
 scheduler = BackgroundScheduler()
 
@@ -85,7 +85,9 @@ def start_scheduler():
         scheduler.start()
         print("Scheduler started")
 
-start_scheduler()
+# 👉 DŮLEŽITÉ: spustí se jen na Renderu (gunicorn)
+if __name__ != "__main__":
+    start_scheduler()
 
 # =========================
 # ROUTES
@@ -175,7 +177,7 @@ with app.app_context():
     db.create_all()
 
 # =========================
-# RUN (pro local debug)
+# RUN (jen lokálně)
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
