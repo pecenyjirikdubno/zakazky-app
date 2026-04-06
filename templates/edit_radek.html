@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Editace řádku</h1>
+<form method="POST">
+    <input name="material" value="{{ radek.material }}" required><br>
+    <input name="kod_materialu" value="{{ radek.kod_materialu }}"><br>
+    <input name="dodavatel" value="{{ radek.dodavatel }}"><br>
+    <input name="cislo_dokladu" value="{{ radek.cislo_dokladu }}"><br>
+    <input type="number" step="0.1" name="odprac_hodiny" value="{{ radek.odprac_hodiny }}"><br>
+    <input type="date" name="datum" value="{{ radek.datum }}"><br>
+    <input type="number" step="0.1" name="cas_na_ceste" value="{{ radek.cas_na_ceste }}"><br>
+    <input type="number" step="0.1" name="km" value="{{ radek.km }}"><br>
+    <button type="submit">Uložit změny</button>
+</form>
+<a href="{{ url_for('zakazka_detail', zakazka_id=radek.zakazka.id) }}">Zpět na zakázku</a>
+{% endblock %}
