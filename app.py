@@ -3,23 +3,26 @@ from flask import Flask, request, redirect, render_template, session, flash
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
+from werkzeug.middleware.proxy_fix import ProxyFix
 import openpyxl
 
 # =========================
-# APP + CONFIG
+# APP
 # =========================
 app = Flask(__name__)
 
-# ✅ SECRET KEY (nastav i v Render ENV)
+# SECRET KEY
 app.secret_key = os.getenv("SECRET_KEY", "super-secret-key")
 
-# ✅ FIX pro HTTPS (Render)
+# 🔥 FIX pro Render (proxy + HTTPS)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 # =========================
-# DATABASE (PostgreSQL)
+# DATABASE
 # =========================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -56,18 +59,6 @@ def current_user():
     return None
 
 # =========================
-# EXPORT
-# =========================
-def export_to_excel(filename, rows):
-    wb = openpyxl.Workbook()
-    ws = wb.active
-
-    for r in rows:
-        ws.append(r)
-
-    wb.save(filename)
-
-# =========================
 # ROUTES
 # =========================
 @app.route("/")
@@ -82,13 +73,19 @@ def index():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-        username = request.form["username"]
-        email = request.form["email"]
-        password = generate_password_hash(request.form["password"])
+        username = request.form.get("username")
+        email = request.form.get("email")
+        password_raw = request.form.get("password")
+
+        if not username or not password_raw:
+            flash("Vyplň všechny údaje")
+            return redirect("/register")
 
         if User.query.filter_by(username=username).first():
             flash("Uživatel existuje")
             return redirect("/register")
+
+        password = generate_password_hash(password_raw)
 
         user = User(username=username, email=email, password=password)
         db.session.add(user)
@@ -103,16 +100,22 @@ def register():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
+        username = request.form.get("username")
+        password = request.form.get("password")
+
+        if not username or not password:
+            flash("Vyplň údaje")
+            return redirect("/login")
 
         user = User.query.filter_by(username=username).first()
 
         if user and check_password_hash(user.password, password):
+            session.clear()
             session["user_id"] = user.id
             return redirect("/")
         else:
             flash("Špatné údaje")
+            return redirect("/login")
 
     return render_template("login.html")
 
@@ -129,8 +132,12 @@ def add():
         return redirect("/login")
 
     if request.method == "POST":
-        nazev = request.form["nazev"]
-        popis = request.form["popis"]
+        nazev = request.form.get("nazev")
+        popis = request.form.get("popis")
+
+        if not nazev:
+            flash("Zadej název")
+            return redirect("/add")
 
         z = Zakazka(nazev=nazev, popis=popis)
         db.session.add(z)
@@ -149,13 +156,13 @@ def delete(id):
         db.session.commit()
     return redirect("/")
 
+
 # =========================
-# TEMP INIT DB (spusť jen jednou!)
+# INIT DB
 # =========================
-@app.route("/initdb")
-def initdb():
+with app.app_context():
     db.create_all()
-    return "DB vytvořena"
+
 
 # =========================
 # RUN
