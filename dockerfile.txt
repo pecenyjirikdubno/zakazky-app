@@ -1,0 +1,25 @@
+# Dockerfile pro Flask aplikaci Zakázky App
+
+# Základní image s Pythonem 3.14
+FROM python:3.14-slim
+
+# Nastavení pracovní složky
+WORKDIR /app
+
+# Kopírování requirements a instalace závislostí
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Kopírování celého projektu do containeru
+COPY . .
+
+# Nastavení proměnných prostředí pro Flask
+ENV FLASK_APP=app.py
+ENV FLASK_ENV=production
+ENV PYTHONUNBUFFERED=1
+
+# Otevření portu 5000
+EXPOSE 5000
+
+# Spuštění aplikace přes gunicorn
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--workers", "1"]
