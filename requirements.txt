@@ -2,4 +2,4 @@ flask
 openpyxl
 gunicorn
 sqlalchemy
-apscheduler
+
