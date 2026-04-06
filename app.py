@@ -1,146 +1,153 @@
 import os
-from flask import Flask, request, redirect, render_template_string, send_file, session
-from openpyxl import Workbook
-from sqlalchemy import create_engine, Column, Integer, String, Float
-from sqlalchemy.orm import declarative_base, sessionmaker
+from flask import Flask, request, redirect, url_for, render_template, flash, session
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 import smtplib
 from email.message import EmailMessage
-from datetime import datetime, timedelta
+import openpyxl
 
-# =========================
-# DB SETUP
-# =========================
-Base = declarative_base()
-engine = create_engine("sqlite:///data.db")
-SessionDB = sessionmaker(bind=engine)
-db = SessionDB()
-
-# =========================
-# APP
-# =========================
+# ---------------------------
+# Flask a DB setup
+# ---------------------------
 app = Flask(__name__)
-app.secret_key = "secret123"
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///zakazky.db"  # nebo jiná DB
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db = SQLAlchemy(app)
 
-# =========================
-# EMAIL SETTINGS
-# =========================
-EMAIL_USER = os.environ.get("EMAIL_USER")
-EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
-EMAIL_TO_DAILY = "pecenyjirik@gmail.com"
-EMAIL_TO_WEEKLY = "pecenyjiri@gmail.com"
+# ---------------------------
+# MODELY
+# ---------------------------
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(150), unique=True, nullable=False)
+    email = db.Column(db.String(150), unique=True, nullable=False)
+    password_hash = db.Column(db.String(256), nullable=False)
 
-# =========================
-# DB MODELY
-# =========================
-class Zakazka(Base):
-    __tablename__ = "zakazky"
-    id = Column(Integer, primary_key=True)
-    nazev = Column(String)
-    owner = Column(String)
+class Zakazka(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    nazev = db.Column(db.String(200), nullable=False)
+    popis = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+# ---------------------------
+# EMAIL FUNKCE
+# ---------------------------
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
 
-class Polozka(Base):
-    __tablename__ = "polozky"
-    id = Column(Integer, primary_key=True)
-    zakazka_id = Column(Integer)
-    nazev = Column(String)
-    material = Column(String)
-    cena_materialu = Column(Float)
-    hodiny = Column(Float)
-    sazba = Column(Float)
-    datum = Column(String)
-
-
-Base.metadata.create_all(engine)
-
-# =========================
-# HELPERS
-# =========================
-def current_user():
-    return session.get("user")
-
-
-def is_admin():
-    users = {"admin": {"password": "admin", "role": "admin"}}
-    return users.get(current_user(), {}).get("role") == "admin"
-
-
-def export_to_excel(zakazky, filename):
-    wb = Workbook()
-    ws = wb.active
-    for zakazka in zakazky:
-        ws.append([f"Zakázka: {zakazka.nazev}"])
-        ws.append(["Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Cena"])
-        polozky = db.query(Polozka).filter_by(zakazka_id=zakazka.id).all()
-        total = 0
-        for p in polozky:
-            cena = p.cena_materialu + (p.hodiny * p.sazba)
-            total += cena
-            ws.append([p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum, cena])
-        ws.append([])
-        ws.append(["", "", "", "", "", "Celkem", total])
-        ws.append([])
-    wb.save(filename)
-    return filename
-
-
-def send_email(subject, body, filename, to_email):
+def send_email(subject, body, to, attachment_path=None):
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = EMAIL_USER
-    msg["To"] = to_email
+    msg["To"] = to
     msg.set_content(body)
 
-    with open(filename, "rb") as f:
-        msg.add_attachment(f.read(), maintype="application", subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=os.path.basename(filename))
-
+    if attachment_path:
+        with open(attachment_path, "rb") as f:
+            data = f.read()
+            msg.add_attachment(data, maintype="application",
+                               subtype="octet-stream",
+                               filename=os.path.basename(attachment_path))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(EMAIL_USER, EMAIL_PASSWORD)
         smtp.send_message(msg)
-    print(f"Email sent to {to_email} with {filename}")
 
-
-# =========================
-# SCHEDULER
-# =========================
-scheduler = BackgroundScheduler()
+# ---------------------------
+# EXPORT FUNKCE
+# ---------------------------
+def export_to_excel(filename, rows):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for row in rows:
+        ws.append(row)
+    wb.save(filename)
 
 def daily_backup():
-    yesterday = datetime.now() - timedelta(days=1)
-    polozky = db.query(Polozka).filter(Polozka.datum >= yesterday.strftime("%Y-%m-%d")).all()
-    zak_ids = set(p.zakazka_id for p in polozky)
-    zakazky = db.query(Zakazka).filter(Zakazka.id.in_(zak_ids)).all()
-    if zakazky:
-        filename = f"daily_backup_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        export_to_excel(zakazky, filename)
-        send_email("Denní záloha zakázek", "Denní záloha nových položek", filename, EMAIL_TO_DAILY)
+    rows = [[z.id, z.nazev, z.popis, z.created_at] for z in Zakazka.query.all()]
+    filename = f"daily_backup_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    export_to_excel(filename, rows)
+    send_email("Denní záloha zakázek", "Denní záloha byla vytvořena.",
+               os.getenv("DAILY_BACKUP_EMAIL"), filename)
 
 def weekly_backup():
-    zakazky = db.query(Zakazka).all()
-    if zakazky:
-        filename = f"weekly_backup_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        export_to_excel(zakazky, filename)
-        send_email("Týdenní záloha zakázek", "Kompletní záloha zakázek", filename, EMAIL_TO_WEEKLY)
+    rows = [[z.id, z.nazev, z.popis, z.created_at] for z in Zakazka.query.all()]
+    filename = f"weekly_backup_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    export_to_excel(filename, rows)
+    send_email("Týdenní záloha zakázek", "Týdenní záloha byla vytvořena.",
+               os.getenv("WEEKLY_BACKUP_EMAIL"), filename)
 
-# Spuštění scheduleru
-scheduler.add_job(daily_backup, "cron", hour=6, minute=0)  # každý den v 6:00
-scheduler.add_job(weekly_backup, "cron", day_of_week="mon", hour=6, minute=0)  # každý pondělí v 6:00
+# ---------------------------
+# SCHEDULER
+# ---------------------------
+scheduler = BackgroundScheduler()
+scheduler.add_job(daily_backup, "cron", hour=6)
+scheduler.add_job(weekly_backup, "cron", day_of_week="sun", hour=6)
 scheduler.start()
 
-# =========================
-# ROUTES - jen pro testování scheduleru
-# =========================
-@app.route("/daily_backup")
-def trigger_daily():
-    daily_backup()
-    return "Denní záloha odeslána"
+# ---------------------------
+# ROUTES
+# ---------------------------
+@app.route("/")
+def index():
+    return "Aplikace běží!"
 
-@app.route("/weekly_backup")
-def trigger_weekly():
-    weekly_backup()
-    return "Týdenní záloha odeslána"
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form["username"]
+        email = request.form["email"]
+        password = request.form["password"]
+        if User.query.filter_by(username=username).first():
+            flash("Uživatel již existuje")
+            return redirect(url_for("register"))
+        hashed = generate_password_hash(password)
+        new_user = User(username=username, email=email, password_hash=hashed)
+        db.session.add(new_user)
+        db.session.commit()
+        flash("Registrace úspěšná! Přihlaste se.")
+        return redirect(url_for("login"))
+    return render_template("register.html")
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form["username"]
+        password = request.form["password"]
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password_hash, password):
+            session["user_id"] = user.id
+            flash("Přihlášení úspěšné")
+            return redirect(url_for("index"))
+        else:
+            flash("Špatné přihlašovací údaje")
+            return redirect(url_for("login"))
+    return render_template("login.html")
 
+@app.route("/logout")
+def logout():
+    session.pop("user_id", None)
+    flash("Byl jste odhlášen")
+    return redirect(url_for("index"))
+
+@app.route("/add_zakazka", methods=["GET", "POST"])
+def add_zakazka():
+    if request.method == "POST":
+        nazev = request.form["nazev"]
+        popis = request.form.get("popis")
+        zakazka = Zakazka(nazev=nazev, popis=popis)
+        db.session.add(zakazka)
+        db.session.commit()
+        flash("Zakázka byla přidána")
+        return redirect(url_for("index"))
+    return render_template("add_zakazka.html")
+
+# ---------------------------
+# RUN APP
+# ---------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    with app.app_context():
+        db.create_all()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
