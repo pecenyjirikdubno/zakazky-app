@@ -1,24 +1,23 @@
 import os
 from flask import Flask, request, redirect, render_template_string, send_file, session
 from openpyxl import Workbook
-
-# DB
 from sqlalchemy import create_engine, Column, Integer, String, Float
 from sqlalchemy.orm import declarative_base, sessionmaker
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime, timedelta
+import smtplib
+from email.message import EmailMessage
 
 # =========================
-# DB SETUP
+# APP & DB SETUP
 # =========================
+app = Flask(__name__)
+app.secret_key = "secret123"
+
 Base = declarative_base()
 engine = create_engine("sqlite:///data.db")
 SessionDB = sessionmaker(bind=engine)
 db = SessionDB()
-
-# =========================
-# APP
-# =========================
-app = Flask(__name__)
-app.secret_key = "secret123"
 
 # =========================
 # USERS
@@ -60,6 +59,31 @@ def is_admin():
     return users.get(current_user(), {}).get("role") == "admin"
 
 # =========================
+# EMAIL SETTINGS
+# =========================
+EMAIL_FROM = "tvuj.email@gmail.com"
+EMAIL_PASSWORD = "tvuj_app_password"
+EMAIL_DAILY = "pecenyjirik@gmail.com"
+EMAIL_WEEKLY = "pecenyjiri@gmail.com"
+
+def send_email(to_email, subject, body, attachment_path):
+    msg = EmailMessage()
+    msg["From"] = EMAIL_FROM
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    if attachment_path and os.path.exists(attachment_path):
+        with open(attachment_path, "rb") as f:
+            data = f.read()
+            name = os.path.basename(attachment_path)
+            msg.add_attachment(data, maintype="application", subtype="octet-stream", filename=name)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(EMAIL_FROM, EMAIL_PASSWORD)
+        smtp.send_message(msg)
+
+# =========================
 # EXCEL EXPORT
 # =========================
 def export_to_excel(zakazka_id):
@@ -70,35 +94,23 @@ def export_to_excel(zakazka_id):
 
     ws.append([f"Zakázka: {zakazka.nazev}"])
     ws.append([])
-
     ws.append(["Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Cena"])
 
     polozky = db.query(Polozka).filter_by(zakazka_id=zakazka_id).all()
-
     total = 0
     for p in polozky:
         cena = p.cena_materialu + (p.hodiny * p.sazba)
         total += cena
-
-        ws.append([
-            p.nazev,
-            p.material,
-            p.cena_materialu,
-            p.hodiny,
-            p.sazba,
-            p.datum,
-            cena
-        ])
+        ws.append([p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum, cena])
 
     ws.append([])
     ws.append(["", "", "", "", "", "Celkem", total])
-
     filename = f"{zakazka.nazev}.xlsx"
     wb.save(filename)
     return filename
 
 # =========================
-# HTML
+# HTML TEMPLATES
 # =========================
 BOOTSTRAP = """
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -204,36 +216,24 @@ def login():
             return redirect("/")
     return render_template_string(LOGIN_HTML)
 
-
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect("/login")
 
-
 @app.route("/")
 def index():
     if not current_user():
         return redirect("/login")
-
-    if is_admin():
-        zakazky = db.query(Zakazka).all()
-    else:
-        zakazky = db.query(Zakazka).filter_by(owner=current_user()).all()
-
+    zakazky = db.query(Zakazka).all() if is_admin() else db.query(Zakazka).filter_by(owner=current_user()).all()
     return render_template_string(INDEX_HTML, zakazky=zakazky, user=current_user())
-
 
 @app.route("/zakazka/<int:id>")
 def detail(id):
     z = db.query(Zakazka).get(id)
     polozky = db.query(Polozka).filter_by(zakazka_id=id).all()
-
-    if not is_admin() and z.owner != current_user():
-        return "Access denied"
-
+    if not is_admin() and z.owner != current_user(): return "Access denied"
     return render_template_string(DETAIL_HTML, z=z, polozky=polozky)
-
 
 @app.route("/nova", methods=["POST"])
 def nova():
@@ -242,22 +242,14 @@ def nova():
     db.commit()
     return redirect("/")
 
-
 @app.route("/edit_zakazka/<int:id>", methods=["POST"])
 def edit_zakazka(id):
     z = db.query(Zakazka).get(id)
-    if not z:
-        return "Zakázka nenalezena"
-    
-    if not is_admin() and z.owner != current_user():
-        return "Access denied"
-
+    if not z: return "Zakázka nenalezena"
+    if not is_admin() and z.owner != current_user(): return "Access denied"
     new_name = request.form.get("nazev")
-    if new_name:
-        z.nazev = new_name
-        db.commit()
+    if new_name: z.nazev = new_name; db.commit()
     return redirect("/")
-
 
 @app.route("/pridat/<int:id>", methods=["POST"])
 def pridat(id):
@@ -275,20 +267,14 @@ def pridat(id):
         db.commit()
     except ValueError:
         return "Chyba: čísla nejsou správně"
-
     return redirect(f"/zakazka/{id}")
-
 
 @app.route("/edit_polozka/<int:id>", methods=["POST"])
 def edit_polozka(id):
     p = db.query(Polozka).get(id)
-    if not p:
-        return "Položka nenalezena"
-    
+    if not p: return "Položka nenalezena"
     zak = db.query(Zakazka).get(p.zakazka_id)
-    if not is_admin() and zak.owner != current_user():
-        return "Access denied"
-
+    if not is_admin() and zak.owner != current_user(): return "Access denied"
     try:
         p.nazev = request.form.get("nazev")
         p.material = request.form.get("material")
@@ -299,24 +285,16 @@ def edit_polozka(id):
         db.commit()
     except ValueError:
         return "Chyba: čísla nejsou správně"
-
     return redirect(f"/zakazka/{p.zakazka_id}")
-
 
 @app.route("/delete_polozka/<int:id>")
 def delete_polozka(id):
     p = db.query(Polozka).get(id)
-    if not p:
-        return "Položka nenalezena"
-
+    if not p: return "Položka nenalezena"
     zak = db.query(Zakazka).get(p.zakazka_id)
-    if not is_admin() and zak.owner != current_user():
-        return "Access denied"
-
-    db.delete(p)
-    db.commit()
+    if not is_admin() and zak.owner != current_user(): return "Access denied"
+    db.delete(p); db.commit()
     return redirect(f"/zakazka/{zak.id}")
-
 
 @app.route("/export/<int:id>")
 def export(id):
@@ -324,7 +302,47 @@ def export(id):
     return send_file(filename, as_attachment=True)
 
 # =========================
-# START
+# AUTOMATICKÉ ZÁLOHY
+# =========================
+def daily_backup():
+    print("Spouštím denní zálohu:", datetime.now())
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    filename = f"daily_backup_{yesterday}.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Zakázka", "Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Celkem"])
+    polozky = db.query(Polozka).filter(Polozka.datum >= yesterday).all()
+    for p in polozky:
+        zak = db.query(Zakazka).get(p.zakazka_id)
+        cena = p.cena_materialu + (p.hodiny * p.sazba)
+        ws.append([zak.nazev, p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum, cena])
+    wb.save(filename)
+    send_email(EMAIL_DAILY, "Denní záloha zakázek", "Přiložen denní export nových položek.", filename)
+    os.remove(filename)
+
+def weekly_backup():
+    print("Spouštím týdenní zálohu:", datetime.now())
+    filename = f"weekly_backup_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Zakázka", "Název", "Materiál", "Cena materiálu", "Hodiny", "Sazba", "Datum", "Celkem"])
+    zakazky = db.query(Zakazka).all()
+    for z in zakazky:
+        polozky = db.query(Polozka).filter_by(zakazka_id=z.id).all()
+        for p in polozky:
+            cena = p.cena_materialu + (p.hodiny * p.sazba)
+            ws.append([z.nazev, p.nazev, p.material, p.cena_materialu, p.hodiny, p.sazba, p.datum, cena])
+    wb.save(filename)
+    send_email(EMAIL_WEEKLY, "Týdenní záloha zakázek", "Přiložen týdenní export všech položek.", filename)
+    os.remove(filename)
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(daily_backup, "cron", hour=0, minute=0)
+scheduler.add_job(weekly_backup, "cron", day_of_week="sun", hour=1, minute=0)
+scheduler.start()
+
+# =========================
+# START APP
 # =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
