@@ -2,17 +2,15 @@ import os
 from flask import Flask, request, redirect, render_template, session, flash
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import openpyxl
 
-# =========================
-# APP + DB
-# =========================
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "secret123")
 
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data.db"
+# 🔥 FIX: absolutní cesta pro SQLite (Render kompatibilní)
+basedir = os.path.abspath(os.path.dirname(__file__))
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + os.path.join(basedir, "data.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
@@ -42,7 +40,7 @@ def current_user():
     return None
 
 # =========================
-# EXPORT
+# EXPORT (bez scheduleru!)
 # =========================
 def export_to_excel(filename, rows):
     wb = openpyxl.Workbook()
@@ -52,42 +50,6 @@ def export_to_excel(filename, rows):
         ws.append(r)
 
     wb.save(filename)
-
-
-def daily_backup():
-    with app.app_context():
-        zakazky = Zakazka.query.all()
-        rows = [[z.id, z.nazev, z.popis, z.created_at] for z in zakazky]
-
-        filename = f"daily_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        export_to_excel(filename, rows)
-        print("Daily backup created")
-
-
-def weekly_backup():
-    with app.app_context():
-        zakazky = Zakazka.query.all()
-        rows = [[z.id, z.nazev, z.popis, z.created_at] for z in zakazky]
-
-        filename = f"weekly_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        export_to_excel(filename, rows)
-        print("Weekly backup created")
-
-# =========================
-# SCHEDULER (OPRAVA)
-# =========================
-scheduler = BackgroundScheduler()
-
-def start_scheduler():
-    if not scheduler.running:
-        scheduler.add_job(daily_backup, "cron", hour=6)
-        scheduler.add_job(weekly_backup, "cron", day_of_week="sun", hour=6)
-        scheduler.start()
-        print("Scheduler started")
-
-# 👉 DŮLEŽITÉ: spustí se jen na Renderu (gunicorn)
-if __name__ != "__main__":
-    start_scheduler()
 
 # =========================
 # ROUTES
@@ -166,8 +128,9 @@ def add():
 @app.route("/delete/<int:id>")
 def delete(id):
     z = Zakazka.query.get(id)
-    db.session.delete(z)
-    db.session.commit()
+    if z:
+        db.session.delete(z)
+        db.session.commit()
     return redirect("/")
 
 # =========================
@@ -177,9 +140,7 @@ with app.app_context():
     db.create_all()
 
 # =========================
-# RUN (jen lokálně)
+# RUN (jen local)
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-import logging
-logging.basicConfig(level=logging.DEBUG)
