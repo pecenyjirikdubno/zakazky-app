@@ -1,3 +1,23 @@
+import os
+from flask import Flask, request, redirect, render_template, session, flash
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+import openpyxl
+
+# =========================
+# APP + DB
+# =========================
+app = Flask(__name__)
+
+# ✅ SECRET KEY
+app.secret_key = os.getenv("SECRET_KEY", "super-secret-key")
+
+# ✅ FIX PRO RENDER (cookies přes HTTPS)
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
 # 🔥 PostgreSQL z Renderu
 DATABASE_URL = os.getenv("DATABASE_URL")
 
