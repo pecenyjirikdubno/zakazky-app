@@ -6,22 +6,23 @@ from datetime import datetime
 import openpyxl
 
 # =========================
-# APP + DB
+# APP + CONFIG
 # =========================
 app = Flask(__name__)
 
-# ✅ SECRET KEY
+# ✅ SECRET KEY (nastav i v Render ENV)
 app.secret_key = os.getenv("SECRET_KEY", "super-secret-key")
 
-# ✅ FIX PRO RENDER (cookies přes HTTPS)
+# ✅ FIX pro HTTPS (Render)
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
-# 🔥 PostgreSQL z Renderu
+# =========================
+# DATABASE (PostgreSQL)
+# =========================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# oprava postgres://
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -149,10 +150,12 @@ def delete(id):
     return redirect("/")
 
 # =========================
-# INIT DB
+# TEMP INIT DB (spusť jen jednou!)
 # =========================
-with app.app_context():
+@app.route("/initdb")
+def initdb():
     db.create_all()
+    return "DB vytvořena"
 
 # =========================
 # RUN
