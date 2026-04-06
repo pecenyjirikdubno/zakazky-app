@@ -1,20 +1,12 @@
-<!DOCTYPE html>
-<html lang="cs">
-<head>
-    <meta charset="UTF-8">
-    <title>Registrace</title>
-</head>
-<body>
-    <h1>Registrace nového uživatele</h1>
-    <form method="POST">
-        <label>Uživatelské jméno:</label>
-        <input type="text" name="username" required><br><br>
-        <label>Email:</label>
-        <input type="email" name="email" required><br><br>
-        <label>Heslo:</label>
-        <input type="password" name="password" required><br><br>
-        <button type="submit">Registrovat</button>
-    </form>
-    <p>Již máte účet? <a href="/login">Přihlásit se</a></p>
-</body>
-</html>
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Registrace</h1>
+<form method="POST">
+    <input type="text" name="username" placeholder="Uživatelské jméno" required><br>
+    <input type="email" name="email" placeholder="Email"><br>
+    <input type="password" name="password" placeholder="Heslo" required><br>
+    <button type="submit">Registrovat</button>
+</form>
+<a href="{{ url_for('login') }}">Mám účet – přihlásit se</a>
+{% endblock %}
