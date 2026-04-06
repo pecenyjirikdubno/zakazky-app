@@ -1,20 +1,7 @@
-import os
-from flask import Flask, request, redirect, render_template, session, flash
-from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
-import openpyxl
-
-# =========================
-# APP + DB
-# =========================
-app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "super-secret-key")
-
 # 🔥 PostgreSQL z Renderu
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Render někdy dává postgres:// → musíme opravit
+# oprava postgres://
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -148,7 +135,7 @@ with app.app_context():
     db.create_all()
 
 # =========================
-# RUN (lokálně)
+# RUN
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
