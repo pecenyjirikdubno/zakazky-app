@@ -30,7 +30,6 @@ users = {"admin": {"password": "admin", "role": "admin"}}
 # =========================
 class Zakazka(Base):
     __tablename__ = "zakazky"
-
     id = Column(Integer, primary_key=True)
     nazev = Column(String)
     owner = Column(String)
@@ -38,7 +37,6 @@ class Zakazka(Base):
 
 class Polozka(Base):
     __tablename__ = "polozky"
-
     id = Column(Integer, primary_key=True)
     zakazka_id = Column(Integer)
     nazev = Column(String)
@@ -132,9 +130,15 @@ INDEX_HTML = BOOTSTRAP + """
 
 <div class="list-group">
 {% for z in zakazky %}
-  <a href='/zakazka/{{z.id}}' class="list-group-item list-group-item-action">
-    {{z.nazev}} <small class="text-muted">({{z.owner}})</small>
-  </a>
+  <div class="list-group-item d-flex justify-content-between align-items-center">
+    <a href='/zakazka/{{z.id}}'>
+      {{z.nazev}} <small class="text-muted">({{z.owner}})</small>
+    </a>
+    <form method='post' action='/edit_zakazka/{{z.id}}' class="d-flex">
+      <input name='nazev' value='{{z.nazev}}' class="form-control form-control-sm me-2">
+      <button class="btn btn-sm btn-warning">Upravit</button>
+    </form>
+  </div>
 {% endfor %}
 </div>
 </div>
@@ -161,17 +165,23 @@ DETAIL_HTML = BOOTSTRAP + """
 
 <table class="table table-striped">
 <tr>
-<th>Název</th><th>Materiál</th><th>Cena mat.</th><th>Hodiny</th><th>Sazba</th><th>Datum</th>
+<th>Název</th><th>Materiál</th><th>Cena mat.</th><th>Hodiny</th><th>Sazba</th><th>Datum</th><th>Akce</th>
 </tr>
 
 {% for p in polozky %}
 <tr>
-<td>{{p.nazev}}</td>
-<td>{{p.material}}</td>
-<td>{{p.cena_materialu}}</td>
-<td>{{p.hodiny}}</td>
-<td>{{p.sazba}}</td>
-<td>{{p.datum}}</td>
+<form method='post' action='/edit_polozka/{{p.id}}'>
+<td><input name='nazev' class="form-control form-control-sm" value='{{p.nazev}}'></td>
+<td><input name='material' class="form-control form-control-sm" value='{{p.material}}'></td>
+<td><input name='cena_materialu' class="form-control form-control-sm" value='{{p.cena_materialu}}'></td>
+<td><input name='hodiny' class="form-control form-control-sm" value='{{p.hodiny}}'></td>
+<td><input name='sazba' class="form-control form-control-sm" value='{{p.sazba}}'></td>
+<td><input name='datum' type='date' class="form-control form-control-sm" value='{{p.datum}}'></td>
+<td>
+  <button class="btn btn-sm btn-warning mb-1">Upravit</button>
+  <a href='/delete_polozka/{{p.id}}' class="btn btn-sm btn-danger mb-1">Smazat</a>
+</td>
+</form>
 </tr>
 {% endfor %}
 </table>
@@ -233,6 +243,22 @@ def nova():
     return redirect("/")
 
 
+@app.route("/edit_zakazka/<int:id>", methods=["POST"])
+def edit_zakazka(id):
+    z = db.query(Zakazka).get(id)
+    if not z:
+        return "Zakázka nenalezena"
+    
+    if not is_admin() and z.owner != current_user():
+        return "Access denied"
+
+    new_name = request.form.get("nazev")
+    if new_name:
+        z.nazev = new_name
+        db.commit()
+    return redirect("/")
+
+
 @app.route("/pridat/<int:id>", methods=["POST"])
 def pridat(id):
     try:
@@ -253,10 +279,49 @@ def pridat(id):
     return redirect(f"/zakazka/{id}")
 
 
+@app.route("/edit_polozka/<int:id>", methods=["POST"])
+def edit_polozka(id):
+    p = db.query(Polozka).get(id)
+    if not p:
+        return "Položka nenalezena"
+    
+    zak = db.query(Zakazka).get(p.zakazka_id)
+    if not is_admin() and zak.owner != current_user():
+        return "Access denied"
+
+    try:
+        p.nazev = request.form.get("nazev")
+        p.material = request.form.get("material")
+        p.cena_materialu = float(request.form.get("cena_materialu").replace(",", "."))
+        p.hodiny = float(request.form.get("hodiny").replace(",", "."))
+        p.sazba = float(request.form.get("sazba").replace(",", "."))
+        p.datum = request.form.get("datum")
+        db.commit()
+    except ValueError:
+        return "Chyba: čísla nejsou správně"
+
+    return redirect(f"/zakazka/{p.zakazka_id}")
+
+
+@app.route("/delete_polozka/<int:id>")
+def delete_polozka(id):
+    p = db.query(Polozka).get(id)
+    if not p:
+        return "Položka nenalezena"
+
+    zak = db.query(Zakazka).get(p.zakazka_id)
+    if not is_admin() and zak.owner != current_user():
+        return "Access denied"
+
+    db.delete(p)
+    db.commit()
+    return redirect(f"/zakazka/{zak.id}")
+
+
 @app.route("/export/<int:id>")
 def export(id):
     filename = export_to_excel(id)
-    return send_file(filename, as_attachment=True)
+ return send_file(filename, as_attachment=True)
 
 # =========================
 # START
