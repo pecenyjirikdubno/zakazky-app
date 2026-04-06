@@ -1,20 +1,19 @@
-# Dockerfile pro Flask aplikaci Zakázky App
-
-# Základní image s Pythonem 3.14
+# Použijeme oficiální Python image
 FROM python:3.14-slim
 
-# Nastavení pracovní složky
+# Nastavíme pracovní adresář
 WORKDIR /app
 
-# Kopírování requirements a instalace závislostí
+# Zkopíruj requirements a nainstaluj závislosti
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Kopírování celého projektu do containeru
+# Zkopíruj celý projekt
 COPY . .
 
-# Otevření portu, který Render používá
-EXPOSE 5000
+# Environment proměnné
+ENV PYTHONUNBUFFERED=1
+ENV PORT=10000
 
-# Spuštění aplikace přes gunicorn
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--workers", "1"]
+# Spustíme Flask přes Gunicorn
+CMD ["gunicorn", "app:app", "-b", "0.0.0.0:$PORT", "--workers", "1"]
