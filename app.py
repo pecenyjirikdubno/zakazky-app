@@ -1,19 +1,23 @@
 import os
-from flask import Flask, request, redirect, render_template, session, flash, g, url_for, send_file
+from flask import Flask, request, redirect, render_template, session, flash, send_file, g
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 from werkzeug.middleware.proxy_fix import ProxyFix
-from functools import wraps
 import pandas as pd
-import io
+from io import BytesIO
 
 # =========================
 # APP
 # =========================
 app = Flask(__name__)
+
+# SECRET KEY
 app.secret_key = os.getenv("SECRET_KEY", "super-secret-key")
+
+# FIX pro Render (proxy + HTTPS)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -24,9 +28,9 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL or "sqlite:///data.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
 db = SQLAlchemy(app)
 
 # =========================
@@ -39,17 +43,20 @@ class User(db.Model):
     password = db.Column(db.String(200), nullable=False)
     is_admin = db.Column(db.Boolean, default=False)
 
+
 class Zakazka(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     nazev = db.Column(db.String(200))
     popis = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     closed = db.Column(db.Boolean, default=False)
+    radky = db.relationship("Radek", backref="zakazka", cascade="all, delete-orphan")
 
-class ZakazkaRadek(db.Model):
+
+class Radek(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    zakazka_id = db.Column(db.Integer, db.ForeignKey("zakazka.id"), nullable=False)
-    material = db.Column(db.String(200), nullable=False)
+    zakazka_id = db.Column(db.Integer, db.ForeignKey("zakazka.id"))
+    material = db.Column(db.String(200))
     kod_materialu = db.Column(db.String(100))
     dodavatel = db.Column(db.String(100))
     cislo_dokladu = db.Column(db.String(100))
@@ -58,45 +65,29 @@ class ZakazkaRadek(db.Model):
     cas_na_ceste = db.Column(db.Float)
     km = db.Column(db.Float)
 
-    zakazka = db.relationship("Zakazka", backref=db.backref("radky", lazy=True))
-
 # =========================
-# HELPERS
+# HELPER
 # =========================
-def current_user():
-    if "user_id" in session:
-        return db.session.get(User, session["user_id"])
-    return None
-
 @app.before_request
 def load_user():
-    g.user = current_user()
+    g.user = None
+    if "user_id" in session:
+        g.user = db.session.get(User, session["user_id"])
 
-def login_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not g.user:
-            return redirect(url_for("login"))
-        return f(*args, **kwargs)
-    return decorated
 
-def admin_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not g.user or not g.user.is_admin:
-            flash("Nemáte oprávnění")
-            return redirect(url_for("index"))
-        return f(*args, **kwargs)
-    return decorated
+def current_user():
+    return g.user
 
 # =========================
 # ROUTES
 # =========================
 @app.route("/")
-@login_required
 def index():
-    zakazky = Zakazka.query.order_by(Zakazka.created_at.desc()).all()
+    if not current_user():
+        return redirect("/login")
+    zakazky = Zakazka.query.all()
     return render_template("index.html", zakazky=zakazky)
+
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -118,6 +109,7 @@ def register():
         return redirect("/login")
     return render_template("register.html")
 
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -130,23 +122,23 @@ def login():
         if user and check_password_hash(user.password, password):
             session.clear()
             session["user_id"] = user.id
-            return redirect(url_for("index"))
+            return redirect("/")
         else:
             flash("Špatné údaje")
             return redirect("/login")
     return render_template("login.html")
 
+
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("login"))
+    return redirect("/login")
 
-# -------------------------
-# Zakázky
-# -------------------------
+
 @app.route("/add", methods=["GET", "POST"])
-@login_required
 def add():
+    if not current_user():
+        return redirect("/login")
     if request.method == "POST":
         nazev = request.form.get("nazev")
         popis = request.form.get("popis")
@@ -156,21 +148,20 @@ def add():
         z = Zakazka(nazev=nazev, popis=popis)
         db.session.add(z)
         db.session.commit()
-        return redirect(url_for("index"))
+        return redirect("/")
     return render_template("add_zakazka.html")
 
+
 @app.route("/zakazka/<int:zakazka_id>", methods=["GET", "POST"])
-@login_required
 def zakazka_detail(zakazka_id):
+    if not current_user():
+        return redirect("/login")
     zakazka = db.session.get(Zakazka, zakazka_id)
     if not zakazka:
         flash("Zakázka nenalezena")
-        return redirect(url_for("index"))
-    if request.method == "POST":
-        if zakazka.closed:
-            flash("Zakázka je uzavřená, nelze upravovat")
-            return redirect(request.url)
-        radek = ZakazkaRadek(
+        return redirect("/")
+    if request.method == "POST" and not zakazka.closed:
+        radek = Radek(
             zakazka_id=zakazka.id,
             material=request.form.get("material"),
             kod_materialu=request.form.get("kod_materialu"),
@@ -183,19 +174,16 @@ def zakazka_detail(zakazka_id):
         )
         db.session.add(radek)
         db.session.commit()
-        return redirect(request.url)
+        return redirect(f"/zakazka/{zakazka.id}")
     return render_template("add_radek.html", zakazka=zakazka)
 
+
 @app.route("/radek/<int:radek_id>/edit", methods=["GET", "POST"])
-@login_required
 def edit_radek(radek_id):
-    radek = db.session.get(ZakazkaRadek, radek_id)
-    if not radek:
-        flash("Řádek nenalezen")
-        return redirect(url_for("index"))
-    if radek.zakazka.closed and not g.user.is_admin:
-        flash("Zakázka je uzavřená, nelze upravovat")
-        return redirect(url_for("zakazka_detail", zakazka_id=radek.zakazka.id))
+    radek = db.session.get(Radek, radek_id)
+    if not radek or (radek.zakazka.closed and not current_user().is_admin):
+        flash("Nepovolený přístup")
+        return redirect("/")
     if request.method == "POST":
         radek.material = request.form.get("material")
         radek.kod_materialu = request.form.get("kod_materialu")
@@ -206,41 +194,53 @@ def edit_radek(radek_id):
         radek.cas_na_ceste = float(request.form.get("cas_na_ceste") or 0)
         radek.km = float(request.form.get("km") or 0)
         db.session.commit()
-        return redirect(url_for("zakazka_detail", zakazka_id=radek.zakazka.id))
+        return redirect(f"/zakazka/{radek.zakazka.id}")
     return render_template("edit_radek.html", radek=radek)
 
-@app.route("/zakazka/<int:zakazka_id>/close")
-@admin_required
-def close_zakazka(zakazka_id):
-    zakazka = db.session.get(Zakazka, zakazka_id)
-    if zakazka:
-        zakazka.closed = True
-        db.session.commit()
-        flash("Zakázka uzavřena")
-    return redirect(url_for("zakazka_detail", zakazka_id=zakazka_id))
 
 @app.route("/zakazka/<int:zakazka_id>/export")
-@login_required
 def export_zakazka(zakazka_id):
+    if not current_user() or not current_user().is_admin:
+        flash("Nepovolený přístup")
+        return redirect("/")
     zakazka = db.session.get(Zakazka, zakazka_id)
-    if not zakazka:
-        flash("Zakázka nenalezena")
-        return redirect(url_for("index"))
     data = [{
-        "Materiál": r.material,
+        "Material": r.material,
         "Kód materiálu": r.kod_materialu,
         "Dodavatel": r.dodavatel,
         "Číslo dokladu": r.cislo_dokladu,
         "Odpracované hodiny": r.odprac_hodiny,
         "Datum": r.datum,
         "Čas na cestě": r.cas_na_ceste,
-        "KM": r.km
+        "Km": r.km
     } for r in zakazka.radky]
     df = pd.DataFrame(data)
-    output = io.BytesIO()
+    output = BytesIO()
     df.to_excel(output, index=False)
     output.seek(0)
-    return send_file(output, download_name=f"zakazka_{zakazka_id}.xlsx", as_attachment=True)
+    return send_file(output, download_name=f"{zakazka.nazev}.xlsx", as_attachment=True)
+
+
+@app.route("/zakazka/<int:zakazka_id>/close")
+def close_zakazka(zakazka_id):
+    if not current_user() or not current_user().is_admin:
+        flash("Nepovolený přístup")
+        return redirect("/")
+    zakazka = db.session.get(Zakazka, zakazka_id)
+    zakazka.closed = True
+    db.session.commit()
+    flash("Zakázka uzavřena")
+    return redirect(f"/zakazka/{zakazka.id}")
+
+
+@app.route("/delete/<int:id>")
+def delete(id):
+    z = db.session.get(Zakazka, id)
+    if z:
+        db.session.delete(z)
+        db.session.commit()
+    return redirect("/")
+
 
 # =========================
 # INIT DB
@@ -248,8 +248,10 @@ def export_zakazka(zakazka_id):
 with app.app_context():
     db.create_all()
 
+
 # =========================
 # RUN
 # =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
