@@ -1,0 +1,33 @@
+!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <title>Zakázky</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        a { text-decoration: none; color: blue; margin-right: 10px; }
+        .flashes { color: red; list-style: none; }
+        input, button { margin: 5px 0; padding: 5px; }
+    </style>
+</head>
+<body>
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <ul class="flashes">
+                {% for msg in messages %}
+                    <li>{{ msg }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    {% endwith %}
+
+    {% if g.user %}
+        Přihlášen: {{ g.user.username }} 
+        {% if g.user.is_admin %}(Admin){% endif %}
+        - <a href="{{ url_for('logout') }}">Odhlásit</a>
+        <hr>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+</body>
+</html>
