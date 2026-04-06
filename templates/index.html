@@ -1,1 +1,16 @@
-<!DOCTYPE html> <html lang="cs"> <head> <meta charset="UTF-8"> <title>Zakázky</title> <style> body { font-family: Arial; margin: 40px; background: #f5f5f5; } h1 { color: #333; } .box { background: white; padding: 15px; margin-bottom: 10px; border-radius: 8px; } a { text-decoration: none; color: blue; } .top { margin-bottom: 20px; } </style> </head> <body> <div class="top"> <h1>Seznam zakázek</h1> <a href="/add">➕ Přidat zakázku</a> | <a href="/logout">🚪 Odhlásit</a> </div> {% if zakazky %} {% for z in zakazky %} <div class="box"> <h3>{{ z.nazev }}</h3> <p>{{ z.popis }}</p> <small>{{ z.created_at }}</small><br> <a href="/delete/{{ z.id }}">🗑️ Smazat</a> </div> {% endfor %} {% else %} <p>Žádné zakázky zatím nejsou.</p> {% endif %} </body> </html>
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Seznam zakázek</h1>
+<a href="{{ url_for('add') }}">+ Nová zakázka</a>
+<ul>
+    {% for z in zakazky %}
+        <li>
+            <a href="{{ url_for('zakazka_detail', zakazka_id=z.id) }}">
+                {{ z.nazev }} - {{ z.popis }}
+                {% if z.closed %}(UZAVŘENA){% endif %}
+            </a>
+        </li>
+    {% endfor %}
+</ul>
+{% endblock %}
