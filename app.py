@@ -5,12 +5,20 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import openpyxl
 
+# =========================
+# APP + DB
+# =========================
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "secret123")
+app.secret_key = os.getenv("SECRET_KEY", "super-secret-key")
 
-# 🔥 FIX: absolutní cesta pro SQLite (Render kompatibilní)
-basedir = os.path.abspath(os.path.dirname(__file__))
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + os.path.join(basedir, "data.db")
+# 🔥 PostgreSQL z Renderu
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Render někdy dává postgres:// → musíme opravit
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL or "sqlite:///data.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
@@ -20,9 +28,9 @@ db = SQLAlchemy(app)
 # =========================
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(100), unique=True)
+    username = db.Column(db.String(100), unique=True, nullable=False)
     email = db.Column(db.String(100))
-    password = db.Column(db.String(200))
+    password = db.Column(db.String(200), nullable=False)
 
 
 class Zakazka(db.Model):
@@ -36,11 +44,11 @@ class Zakazka(db.Model):
 # =========================
 def current_user():
     if "user_id" in session:
-        return User.query.get(session["user_id"])
+        return db.session.get(User, session["user_id"])
     return None
 
 # =========================
-# EXPORT (bez scheduleru!)
+# EXPORT
 # =========================
 def export_to_excel(filename, rows):
     wb = openpyxl.Workbook()
@@ -127,7 +135,7 @@ def add():
 
 @app.route("/delete/<int:id>")
 def delete(id):
-    z = Zakazka.query.get(id)
+    z = db.session.get(Zakazka, id)
     if z:
         db.session.delete(z)
         db.session.commit()
@@ -140,7 +148,7 @@ with app.app_context():
     db.create_all()
 
 # =========================
-# RUN (jen local)
+# RUN (lokálně)
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
